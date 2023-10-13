@@ -1,0 +1,12 @@
+# # Ignore JSON and pickle files
+# *.json
+# *.pkl
+
+# # Ignore individual files
+# credentials.json
+# firebase_secrets.json
+# testing.py
+# gmail_token.json
+# gmail_service.pkl
+.DS_Store
+
