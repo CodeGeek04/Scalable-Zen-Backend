@@ -13,35 +13,11 @@ from googleapiclient.discovery import build
 import json
 from cryptography.fernet import Fernet
 from uuid import uuid4
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+import firebase_admin
+from firebase_admin import credentials, firestore
 from pytz import timezone
-
-# Initialize Firebase Admin SDK (only do this once in your application)
-cred = credentials.Certificate('firebase_secrets.json')
-firebase_admin.initialize_app(cred, {
-    'storageBucket': 'userbot-285810.appspot.com'
-})
-
-def get_calendar_service(email_id):
-    # Fetch serialized credentials from Firebase Storage
-    bucket = storage.bucket()
-    blob = bucket.blob(email_id)
-    serialized_credentials = blob.download_as_text()
-
-    # Deserialize the credentials
-    # serialized_credentials = fernet.decrypt(encrypted_serialized_credentials)
-    cred_info = json.loads(serialized_credentials)
-    creds = Credentials(
-        token=cred_info['token'],
-        refresh_token=cred_info['refresh_token'],
-        token_uri=cred_info['token_uri'],
-        client_id=cred_info['client_id'],
-        client_secret=cred_info['client_secret'],
-        scopes=cred_info['scopes']
-    )
-
-    # Build the calendar service
-    service = build('calendar', 'v3', credentials=creds)
-    return service
 
 def filter_weekends(response: str) -> str:
     lines = response.strip().split("\n")
@@ -60,20 +36,44 @@ def filter_weekends(response: str) -> str:
             filtered_lines.append(line)
     return "\n".join(filtered_lines)
 
+def build_calendar_service(user_credentials):
+    try:
+        creds = Credentials.from_authorized_user_info(user_credentials)
+        service = build("calendar", "v3", credentials=creds)
+        return service
+    except Exception as e:
+        print(f"Error building Calendar service: {e}")
+        return None
 
-def fetch_free_time(email_address, preferred_start_time="09:00", preferred_end_time="17:00", remove_weekends=True):
-    calendar_service = get_calendar_service(email_address)
+def fetch_free_time(userId):
+    db = firestore.client()
+
+    # Retrieve user's document from the USERS collection
+    user_ref = db.collection("USERS").document(userId)
+    user_doc = user_ref.get()
+
+    if not user_doc.exists:
+        return []  # User document does not exist
+
+    # Retrieve user's preferences and calendar credentials
+    preferences = user_doc.get("preferences")
+    calendar_token = user_doc.get("calendarCredentials")
+    email_address = user_doc.get("defaultEmail")
+
+    print(f"Preferences: {preferences}")
+    print(f"Calendar Credentials: {calendar_token}")
+    print(f"Email Address: {email_address}")
+    # return "YOU ARE FREE FOR NEXT 20 DAYS", "Success", "Success"
+    
+    calendar_service = build_calendar_service(calendar_token)
     calendar_timezone = get_calendar_timezone(email_address, calendar_service)
-    tz = timezone(calendar_timezone)
-
-    now = datetime.utcnow().replace(tzinfo=timezone('UTC')).astimezone(tz)
-    end_time = now + timedelta(days=20)
-
-    # Convert the preferred time strings to datetime objects
-    preferred_start_time_dt = datetime.strptime(preferred_start_time, '%H:%M').time()
-    preferred_end_time_dt = datetime.strptime(preferred_end_time, '%H:%M').time()
 
     # Fetch the free/busy information
+    preferred_start_time_dt = datetime.strptime(preferences['startTime'], '%H:%M').time()
+    preferred_end_time_dt = datetime.strptime(preferences['endTime'], '%H:%M').time()
+    tz = timezone(calendar_timezone)
+    now = datetime.utcnow().replace(tzinfo=timezone('UTC')).astimezone(tz)
+    end_time = now + timedelta(days=20)
     body = {
         "timeMin": now.isoformat(),
         "timeMax": end_time.isoformat(),
@@ -155,16 +155,17 @@ def fetch_free_time(email_address, preferred_start_time="09:00", preferred_end_t
             formatted_free_slots.append(f"{formatted_day}: {formatted_time_ranges}")
 
     total_free_slots = '\n'.join(formatted_free_slots) + f"\n(Time Zone: {calendar_timezone})"
-    if remove_weekends:
+    if not preferences['yesWeekends']:
         total_free_slots = filter_weekends(total_free_slots)
-    return total_free_slots
+    return total_free_slots, calendar_service, calendar_timezone
 
 
 
 
-def create_calendar_event(owner_email, client_email, assistant_email, start_time, end_time, time_zone = 'US/Eastern'):
+def create_calendar_event(owner_calendar_service, owner_email, client_email, assistant_email, start_time, end_time, time_zone = 'US/Eastern'):
     # Get the calendar service for the owner
-    owner_calendar_service = get_calendar_service(owner_email)
+    # if not owner_calendar_service:
+    #     owner_calendar_service = get_calendar_service(owner_email)
 
     # Define event details
     event = {
@@ -196,7 +197,10 @@ def get_calendar_timezone(email_address, service = None):
     return calendar_metadata['timeZone']
 
 if __name__ == '__main__':
-    dummy_email = "shivam@elysiuminnovations.ai"
+    # Initialize Firebase Admin SDK
+    cred = credentials.Certificate("firebaseCredentials.json")
+    firebase_admin.initialize_app(cred)
+
     service = get_calendar_service(dummy_email)
     print(get_calendar_timezone(dummy_email, service))
     print(fetch_free_time(dummy_email))

@@ -63,14 +63,16 @@ def get_gmail_service():
 
 # Function to send emails
 
-def send_email(service, to_email, subject, body, bcc_email):
+def send_email(service, to_email, subject, body, bcc_email = None):
     email_msg = MIMEText(body)
     email_msg['to'] = to_email
     email_msg['subject'] = subject
-    email_msg['bcc'] = bcc_email
+
+    if bcc_email:
+        email_msg['bcc'] = bcc_email
 
     raw_email = base64.urlsafe_b64encode(email_msg.as_bytes()).decode('utf-8')
-    service.users().messages().send(userId='me', body={'raw': raw_email}).execute()
+    return service.users().messages().send(userId='me', body={'raw': raw_email}).execute()
 
 
 def reply_to_email(service, original_message, reply_content):
@@ -94,9 +96,6 @@ def reply_to_email(service, original_message, reply_content):
     service.users().messages().send(userId='me', body=message).execute()
 
 def reply_to_email_thread(gmail_service, original_message, reply_text, to_email, thread_id, bcc_email=None):
-    """
-    Reply to an email thread.
-    """
     # Extract necessary headers from the original email
     original_headers = original_message['payload']['headers']
     message_id = next(header['value'] for header in original_headers if header['name'] == 'Message-ID')

@@ -21,6 +21,7 @@ def generate_resp(history, sender_email, owner_email, free_time, assistant_email
                     Do not write subject of the email.
                     I will be sending your response directly to the client as it is, so you need to reply JUST THE BODY of email which will be automatically sent to the client. 
                     Do not even share any notes/instructions/your thought process.
+                    Be very brief and to the point. Do not write anything unnecessary.
                     If you have already provided suggestions, and client is agreeing to one of them, just generate a confirmation message.
                     While giving regards/salutation, use- Zen, Virtual Assistant to "owner's name".'''.format(str(formatted_date), owner_email, free_time, sender_email, history) 
     messages_list = [
