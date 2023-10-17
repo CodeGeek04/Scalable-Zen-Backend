@@ -37,29 +37,27 @@ def get_associated_emails_for_agent(agent_id):
     for associated_user_doc in associated_users_docs:
         user_data = associated_user_doc.to_dict()
 
-        # Check if the user status is "CalConnected-Active"
-        if user_data.get("status") == "NoCal":
-            user_id = user_data.get("userId")
+        user_id = user_data.get("userId")
 
-            # Get the user document to fetch the defaultEmail
-            user_ref = db.collection("USERS").document(user_id)
-            user_doc = user_ref.get()
+        # Get the user document to fetch the defaultEmail
+        user_ref = db.collection("USERS").document(user_id)
+        user_doc = user_ref.get()
 
-            if user_doc.exists:
-                default_email = user_doc.get("defaultEmail")
-                # print(f"Default email for user {user_id}: {default_email}")
+        if user_doc.exists:
+            default_email = user_doc.get("defaultEmail")
+            # print(f"Default email for user {user_id}: {default_email}")
 
-                # Get the USERMAILS collection from the user document
-                usermails_ref = user_ref.collection("USEREMAILS")
-                usermails_docs = usermails_ref.stream()
+            # Get the USERMAILS collection from the user document
+            usermails_ref = user_ref.collection("USEREMAILS")
+            usermails_docs = usermails_ref.stream()
 
-                # Iterate through USERMAILS collection to fetch emails
-                for usermail_doc in usermails_docs:
-                    email_data = usermail_doc.to_dict()
-                    email = email_data.get("email")
+            # Iterate through USERMAILS collection to fetch emails
+            for usermail_doc in usermails_docs:
+                email_data = usermail_doc.to_dict()
+                email = email_data.get("email")
 
-                    # Add the email and defaultEmail to the result dictionary
-                    result[email] = [default_email, user_id]
+                # Add the email and defaultEmail to the result dictionary
+                result[email] = [default_email, user_id]
 
     return result
 

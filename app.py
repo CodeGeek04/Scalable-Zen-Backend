@@ -25,6 +25,8 @@ firebase_admin.initialize_app(cred)
 
 #ADDING MESSAGES TO THREAD COLLECTION
 def extract_email_content(message):
+    current_datetime = datetime.now()
+    formatted_date = current_datetime.strftime("%d/%m/%Y %H:%M:%S")
     # Initialize email content
     email_content = {
         "bcc": message.get('bccRecipients', []),
@@ -172,7 +174,7 @@ def index():
                 print("User has not connected calendar. Sending email to connect calendar.")
                 subject_reply = "Request to connect calendar"
                 body_reply = "You have not connected your calendar yet. Please connect your calendar to continue."
-                send_email(gmail_service, owner_email, subject_reply, body_reply)
+                reply_to_email_thread(gmail_service, messages[-1], body_reply, owner_email, thread['id'], agent_email)
                 mark_thread_as_read(gmail_service, thread_id)
 
             thread_ref = db.collection("THREADS").document(thread_id)
@@ -427,7 +429,8 @@ def callback():
     # Prepare data for Firestore
     user_data = {
         'calendarCredentials': serialized_credentials,
-        'calendarEmail': email
+        'calendarEmail': email,
+        'status': 'CalConnected-Active'
     }
 
     db = firestore.client()
@@ -438,15 +441,10 @@ def callback():
     for doc in matching_docs:
         doc.reference.update(user_data)
 
-    return f'''
-    <html>
-        <head>
-            <meta http-equiv="refresh" content="2;url=http://localhost:3000/dashboard?userId={userId}">
-        </head>
-        <body>
-            <p>Authentication Complete, Redirecting.........</p>
-        </body>
-    </html>
+    return '''
+    <script>
+        window.close(); // Close the popup window
+    </script>
     '''
 
 if __name__ == '__main__':
