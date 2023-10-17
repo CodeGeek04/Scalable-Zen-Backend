@@ -59,6 +59,7 @@ def fetch_free_time(userId):
     preferences = user_doc.get("preferences")
     calendar_token = user_doc.get("calendarCredentials")
     email_address = user_doc.get("defaultEmail")
+    calendar_email = user_doc.get("calendarEmail")
 
     print(f"Preferences: {preferences}")
     print(f"Calendar Credentials: {calendar_token}")
@@ -66,7 +67,7 @@ def fetch_free_time(userId):
     # return "YOU ARE FREE FOR NEXT 20 DAYS", "Success", "Success"
     
     calendar_service = build_calendar_service(calendar_token)
-    calendar_timezone = get_calendar_timezone(email_address, calendar_service)
+    calendar_timezone = get_calendar_timezone(calendar_email, calendar_service)
 
     # Fetch the free/busy information
     preferred_start_time_dt = datetime.strptime(preferences['startTime'], '%H:%M').time()

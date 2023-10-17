@@ -1,5 +1,6 @@
 from datetime import datetime
 import openai
+openai.api_key = "OPENAI_API_KEY"
 
 def query(role, content):
     return {"role": role, "content": content}
@@ -39,6 +40,7 @@ def generate_resp(history, sender_email, owner_email, free_time, assistant_email
         )
     except Exception as e:
         print("ERROR: {}".format(e))
+        return "ERROR", "ERROR"
     print("GOT IT")
 
     # Extract the assistant's reply from the response

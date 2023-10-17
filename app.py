@@ -1,3 +1,5 @@
+from flask import Flask, request, url_for, redirect, session
+from flask_cors import CORS
 from list_emails import get_agents, get_associated_emails_for_agent
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -8,6 +10,15 @@ from responder import generate_resp
 from event_planner import extract_meeting_info
 from gmail_api import reply_to_email_thread, send_email
 from datetime import datetime
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
+import os
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
+app = Flask(__name__)
+app.secret_key = "secret key"
+CORS(app)
 
 cred = credentials.Certificate("firebaseCredentials.json")
 firebase_admin.initialize_app(cred)
@@ -120,243 +131,324 @@ def mark_thread_as_read(gmail_service, thread_id):
     return "Thread marked as read."
 
 
+@app.route('/')
+def index():
+    agents = get_agents()
+    current_datetime = datetime.now()
+    formatted_date = current_datetime.strftime("%d/%m/%Y %H:%M:%S")
+    db = firestore.client()
+    for agent in agents:
+        agent_id = agent["id"]
+        agent_email = agent["email"]
+        print(f"Agent ID: {agent_id}, Agent Email: {agent_email}")
 
-agents = get_agents()
-current_datetime = datetime.now()
-formatted_date = current_datetime.strftime("%d/%m/%Y %H:%M:%S")
-db = firestore.client()
-for agent in agents:
-    agent_id = agent["id"]
-    agent_email = agent["email"]
-    print(f"Agent ID: {agent_id}, Agent Email: {agent_email}")
+        emails = get_associated_emails_for_agent(agent_id)
+        print(f"Associated Emails with Owner id: {emails}")
+        email_ids = list(emails.keys())
+        print(f"Associated Email IDs: {email_ids}")
 
-    emails = get_associated_emails_for_agent(agent_id)
-    print(f"Associated Emails with Owner id: {emails}")
-    email_ids = list(emails.keys())
-    print(f"Associated Email IDs: {email_ids}")
-
-    unread_threads, gmail_service = get_unread_threads_and_service(agent_id)
-    print(f"Unread Threads: {len(unread_threads)}, Threads: {unread_threads}")
-    if len(unread_threads) == 0:
-        print("No unread threads found. Continuing...")
-        continue
-
-    for thread in unread_threads:
-        thread_id = thread["id"]
-        full_thread = gmail_service.users().threads().get(userId='me', id=thread['id']).execute()
-        messages = full_thread.get('messages', [])
-        owner_email, client_email = get_emails_from_thread(messages, agent_email, email_ids)
-
-        if not owner_email:
-            print("Owner email not found in thread. Marking it as read and continuing...")
-            mark_thread_as_read(gmail_service, thread_id)
+        unread_threads, gmail_service = get_unread_threads_and_service(agent_id)
+        print(f"Unread Threads: {len(unread_threads)}, Threads: {unread_threads}")
+        if len(unread_threads) == 0:
+            print("No unread threads found. Continuing...")
             continue
-        
-        print(f"Owner Email: {owner_email}, Client Email: {client_email}")
-        user_id = emails[owner_email][1]
-        user_ref = db.collection("USERS").document(user_id)
-        status = user_ref.get().get("status")
-        if status == "NoCal":
-            print("User has not connected calendar. Sending email to connect calendar.")
-            subject_reply = "Request to connect calendar"
-            body_reply = "You have not connected your calendar yet. Please connect your calendar to continue."
-            send_email(gmail_service, owner_email, subject_reply, body_reply)
-            mark_thread_as_read(gmail_service, thread_id)
 
-        thread_ref = db.collection("THREADS").document(thread_id)
-        thread_doc = thread_ref.get()
+        for thread in unread_threads:
+            thread_id = thread["id"]
+            full_thread = gmail_service.users().threads().get(userId='me', id=thread['id']).execute()
+            messages = full_thread.get('messages', [])
+            owner_email, client_email = get_emails_from_thread(messages, agent_email, email_ids)
 
-        if thread_doc.exists:
-            print(f"Thread {thread_id} already exists in collection 'THREADS'")
-            print(f"Adding last message to collection 'MESSAGES'")
-            last_message = messages[-1]
-            add_message_to_thread(thread_ref, last_message)
+            if not owner_email:
+                print("Owner email not found in thread. Marking it as read and continuing...")
+                mark_thread_as_read(gmail_service, thread_id)
+                return "Success"
+            
+            print(f"Owner Email: {owner_email}, Client Email: {client_email}")
+            user_id = emails[owner_email][1]
+            user_ref = db.collection("USERS").document(user_id)
+            status = user_ref.get().get("status")
+            if status == "NoCal":
+                print("User has not connected calendar. Sending email to connect calendar.")
+                subject_reply = "Request to connect calendar"
+                body_reply = "You have not connected your calendar yet. Please connect your calendar to continue."
+                send_email(gmail_service, owner_email, subject_reply, body_reply)
+                mark_thread_as_read(gmail_service, thread_id)
 
-            #FETCHING FREE TIME FOR OWNER
-            userId = emails[owner_email][1]
-            free_time, calendar_service, timeZone = fetch_free_time(userId)
-            print(f"Free Time: {free_time}")
+            thread_ref = db.collection("THREADS").document(thread_id)
+            thread_doc = thread_ref.get()
 
-            messages_collection = thread_ref.collection("MESSAGES")
-            all_messages = messages_collection.stream()
-            history = ""
-            for i, message in enumerate(all_messages):
-                message_data = message.to_dict()
-                history += f"{message_data['sender']}: {message_data['body']}\n"
-            print("History: ", history)
+            if thread_doc.exists:
+                print(f"Thread {thread_id} already exists in collection 'THREADS'")
+                print(f"Adding last message to collection 'MESSAGES'")
+                last_message = messages[-1]
+                add_message_to_thread(thread_ref, last_message)
 
-            body_reply, subject_reply = generate_resp(history, client_email, owner_email, free_time, agent_email)
-            print("Body Reply: ", body_reply)
-            print("Subject Reply: ", subject_reply)
+                #FETCHING FREE TIME FOR OWNER
+                userId = emails[owner_email][1]
+                free_time, calendar_service, timeZone = fetch_free_time(userId)
+                print(f"Free Time: {free_time}")
 
-            meeting_info = extract_meeting_info(body_reply)
-            if meeting_info.meet:
-                print("MEETING CONFIRMED")
-                start_time = meeting_info.startTime
-                end_time = meeting_info.endTime
-                print("START TIME: {}".format(start_time))
-                print("END TIME: {}".format(end_time))
-                print("TIME ZONE: {}".format(timeZone))
-                event = create_calendar_event(calendar_service, owner_email, client_email, agent_email, start_time, end_time, timeZone)
-                try:
-                    meeting_link = event.get('hangoutLink', None)
-                except:
-                    meeting_link = ""
-                body_reply += "\n\nMeeting scheduled for {} to {} GMT \n {}".format(start_time, end_time, meeting_link)
+                messages_collection = thread_ref.collection("MESSAGES")
+                all_messages = messages_collection.stream()
+                history = ""
+                for i, message in enumerate(all_messages):
+                    message_data = message.to_dict()
+                    history += f"{message_data['sender']}: {message_data['body']}\n"
+                print("History: ", history)
 
-                # ADD MEETING TO MEETINGS COLLECTION
-                meetings_ref = db.collection("MEETINGS")
-                meeting_id = meetings_ref.document()
-                meeting_data = {
-                    "startTime": start_time,
-                    "endTime": end_time,
-                    "timeZone": timeZone,
-                    "meetingLink": meeting_link,
-                    "lastAgentAction": formatted_date,
-                    "participants": [owner_email, client_email],
-                    "schedulingAgentId": agent_id,
-                    "schedulingAgentEmail": agent_email,
-                    "threadId": thread_id,
-                    "userId": userId,
+                body_reply, subject_reply = generate_resp(history, client_email, owner_email, free_time, agent_email)
+                print("Body Reply: ", body_reply)
+                print("Subject Reply: ", subject_reply)
+
+                meeting_info = extract_meeting_info(body_reply)
+                if meeting_info.meet:
+                    print("MEETING CONFIRMED")
+                    start_time = meeting_info.startTime
+                    end_time = meeting_info.endTime
+                    print("START TIME: {}".format(start_time))
+                    print("END TIME: {}".format(end_time))
+                    print("TIME ZONE: {}".format(timeZone))
+                    event = create_calendar_event(calendar_service, owner_email, client_email, agent_email, start_time, end_time, timeZone)
+                    try:
+                        meeting_link = event.get('hangoutLink', None)
+                    except:
+                        meeting_link = ""
+                    body_reply += "\n\nMeeting scheduled for {} to {} GMT \n {}".format(start_time, end_time, meeting_link)
+
+                    # ADD MEETING TO MEETINGS COLLECTION
+                    meetings_ref = db.collection("MEETINGS")
+                    meeting_id = meetings_ref.document()
+                    meeting_data = {
+                        "startTime": start_time,
+                        "endTime": end_time,
+                        "timeZone": timeZone,
+                        "meetingLink": meeting_link,
+                        "lastAgentAction": formatted_date,
+                        "participants": [owner_email, client_email],
+                        "schedulingAgentId": agent_id,
+                        "schedulingAgentEmail": agent_email,
+                        "threadId": thread_id,
+                        "userId": userId,
+                    }
+                    meeting_id.set(meeting_data)
+                    print("MEETING ADDED TO MEETINGS COLLECTION")
+
+                    #CHANGE STATUS FOR THREAD
+                    thread_ref.update({"status": "Scheduled"})
+                    thread_ref.update({"meetingId": meeting_id})
+                    print("THREAD STATUS CHANGED TO SCHEDULED")
+
+                    #ADD MEETING IN USER COLLECTION
+                    users_ref = db.collection("USERS")
+                    user_doc_ref = users_ref.document(userId)
+                    meetings_collection_ref = user_doc_ref.collection("MEETINGS")
+                    new_meeting_ref = meetings_collection_ref.document()
+                    meeting_data = {
+                        "meetingId": meeting_id,
+                        "meetingLink": meeting_link,
+                    }
+                    new_meeting_ref.set(meeting_data)
+                    print(f"MEETING ADDED TO USER {userId}', COLLECTION")
+
+                sent_message = reply_to_email_thread(gmail_service, last_message, body_reply, client_email, thread['id'], owner_email)
+                sent_message = gmail_service.users().messages().get(userId='me', id=sent_message['id']).execute()
+                add_message_to_thread(thread_ref, sent_message)
+                print("REPLY SENT AND ADDED TO THREAD: ", thread_id)
+
+                mark_thread_as_read(gmail_service, thread_id)
+                print(f"Marked thread {thread_id} as read.")
+
+
+            else:
+                print(f"Thread {thread_id} does not exist in collection 'THREADS'")
+                print("Adding thread to collection 'RECEIVEDEMAILS'")
+                incoming_data = {
+                    "ownerEmail": owner_email,
+                    "ownerId": emails[owner_email][1],
+                    "associatedClientEmail": client_email,
+                    "handlingAgentId": agent_id,
+                    "subject": messages[0]['payload']['headers'][0]['value'],
+                    "createdAt": formatted_date,
+                    "associatedThreadId": thread_id,
                 }
-                meeting_id.set(meeting_data)
-                print("MEETING ADDED TO MEETINGS COLLECTION")
+                received_emails_ref = db.collection("RECEIVEDEMAILS").document(thread_id)
+                received_emails_ref.set(incoming_data)
 
-                #CHANGE STATUS FOR THREAD
-                thread_ref.update({"status": "Scheduled"})
-                thread_ref.update({"meetingId": meeting_id})
-                print("THREAD STATUS CHANGED TO SCHEDULED")
+                for message in messages:
+                    add_message_to_thread(received_emails_ref, message)
+                print("Added thread to collection 'RECEIVEDEMAILS'.")
 
-                #ADD MEETING IN USER COLLECTION
+                userId = emails[owner_email][1]
+                free_time, calendar_service, timeZone = fetch_free_time(userId)
+                print(f"Free Time: {free_time}")
+
+                messages_collection = received_emails_ref.collection("MESSAGES")
+                all_messages = messages_collection.stream()
+                history = ""
+                for i, message in enumerate(all_messages):
+                    message_data = message.to_dict()
+                    history += f"{message_data['sender']}: {message_data['body']}\n"
+                print("History: ", history)
+
+                body_reply, subject_reply = generate_resp(history, client_email, owner_email, free_time, agent_email)
+                print("Body Reply: ", body_reply)
+                print("Subject Reply: ", subject_reply)
+
+                meeting_info = extract_meeting_info(body_reply)
+                status = "Not Scheduled"
+                meeting_id = ""
+                meeting_link = ""
+                if meeting_info.meet:
+                    print("MEETING CONFIRMED")
+                    start_time = meeting_info.startTime
+                    end_time = meeting_info.endTime
+                    print("START TIME: {}".format(start_time))
+                    print("END TIME: {}".format(end_time))
+                    print("TIME ZONE: {}".format(timeZone))
+                    event = create_calendar_event(calendar_service, owner_email, client_email, agent_email, start_time, end_time, timeZone)
+                    try:
+                        meeting_link = event.get('hangoutLink', None)
+                    except:
+                        meeting_link = ""
+                    body_reply += "\n\nMeeting scheduled for {} to {} GMT \n {}".format(start_time, end_time, meeting_link)
+
+                    # ADD MEETING TO MEETINGS COLLECTION
+                    meetings_ref = db.collection("MEETINGS")
+                    meeting_id = meetings_ref.document()
+                    meeting_data = {
+                        "startTime": start_time,
+                        "endTime": end_time,
+                        "timeZone": timeZone,
+                        "meetingLink": meeting_link,
+                        "lastAgentAction": formatted_date,
+                        "participants": [owner_email, client_email],
+                        "schedulingAgentId": agent_id,
+                        "schedulingAgentEmail": agent_email,
+                        "userId": userId,
+                    }
+                    meeting_id.set(meeting_data)
+                    print("MEETING ADDED TO MEETINGS COLLECTION")
+
+                    #ADD MEETING IN USER COLLECTION
+                    users_ref = db.collection("USERS")
+                    user_doc_ref = users_ref.document(userId)
+                    meetings_collection_ref = user_doc_ref.collection("MEETINGS")
+                    new_meeting_ref = meetings_collection_ref.document()
+                    meeting_data = {
+                        "meetingId": meeting_id,
+                        "meetingLink": meeting_link,
+                    }
+                    new_meeting_ref.set(meeting_data)
+                    print(f"MEETING ADDED TO USER {userId}', COLLECTION")
+
+                sent_message = send_email(gmail_service, client_email, subject_reply, body_reply, owner_email)
+                new_thread_id = sent_message['threadId']
+                new_thread_ref = db.collection("THREADS").document(new_thread_id)
+                new_thread_data = {
+                    "ownerEmail": owner_email,
+                    "ownerId": emails[owner_email][1],
+                    "associatedClientEmail": client_email,
+                    "handlingAgentId": agent_id,
+                    "subject": subject_reply,
+                    "createdAt": formatted_date,
+                    "status": status,
+                    "meetingId": meeting_id,
+                }
+                #ADDING NEW THREAD TO THREADS COLLECTION
+                new_thread_ref.set(new_thread_data)
+
+                print("ADDING LAST MESSAGE TO THREAD")
+                sent_message = gmail_service.users().messages().get(userId='me', id=sent_message['id']).execute()
+                add_message_to_thread(new_thread_ref, sent_message)
+                print("EMAIL SENT AND ADDED TO THREAD: ", thread_id)
+
+                #UPDATING STATUS OF THREAD
+                if meeting_info.meet:
+                    new_thread_ref.update({"status": "Scheduled"})
+                    new_thread_ref.update({"meetingId": meeting_id})
+
+                #ASSOCIATING THREAD WITH RECEIVED EMAIL
+                received_emails_ref.update({"associatedThreadId": new_thread_id})
+
+                print("ADDING THREAD TO USER's COLLECTION")
                 users_ref = db.collection("USERS")
                 user_doc_ref = users_ref.document(userId)
-                meetings_collection_ref = user_doc_ref.collection("MEETINGS")
-                new_meeting_ref = meetings_collection_ref.document()
-                meeting_data = {
-                    "meetingId": meeting_id,
-                    "meetingLink": meeting_link,
-                }
-                new_meeting_ref.set(meeting_data)
-                print(f"MEETING ADDED TO USER {userId}', COLLECTION")
+                user_threads_collection_ref = user_doc_ref.collection("THREADS")
+                new_thread_ref = user_threads_collection_ref.document(new_thread_id)
+                new_thread_ref.set(new_thread_data)
 
-            sent_message = reply_to_email_thread(gmail_service, last_message, body_reply, client_email, thread['id'], owner_email)
-            sent_message = gmail_service.users().messages().get(userId='me', id=sent_message['id']).execute()
-            add_message_to_thread(thread_ref, sent_message)
-            print("REPLY SENT AND ADDED TO THREAD: ", thread_id)
+                mark_thread_as_read(gmail_service, thread_id)
+                print(f"Marked thread {thread_id} as read.")
+    return "Success"
 
-            mark_thread_as_read(gmail_service, thread_id)
-            print(f"Marked thread {thread_id} as read.")
+@app.route('/authenticate_calendar', methods=['POST', 'GET'])
+def authenticate():
+    user_id = request.args.get('userId')
+    print("USER ID: ", user_id)
+    flow = InstalledAppFlow.from_client_secrets_file(
+        'servicesCredentials.json',
+        ['https://www.googleapis.com/auth/calendar']
+    )
+    flow.redirect_uri = url_for('callback', userId=user_id, _external=True)
+    print(flow.redirect_uri)
+    authorization_url, _ = flow.authorization_url(prompt='consent')
+    session['userId'] = user_id
+    return redirect(authorization_url)
 
+@app.route('/callback')
+def callback():
+    userId = session['userId']
+    print("USER ID IN CALLBACK: ", userId)
+    flow = InstalledAppFlow.from_client_secrets_file(
+        'servicesCredentials.json',
+        ['https://www.googleapis.com/auth/calendar']
+    )
+    flow.redirect_uri = url_for('callback', userId=userId, _external=True)
+    print(flow.redirect_uri)
+    flow.fetch_token(authorization_response=request.url)
 
-        else:
-            print(f"Thread {thread_id} does not exist in collection 'THREADS'")
-            print("Adding thread to collection 'RECEIVEDEMAILS'")
-            incoming_data = {
-                "ownerEmail": owner_email,
-                "ownerId": emails[owner_email][1],
-                "associatedClientEmail": client_email,
-                "handlingAgentId": agent_id,
-                "subject": messages[0]['payload']['headers'][0]['value'],
-                "createdAt": formatted_date,
-                "associatedThreadId": thread_id,
-            }
-            received_emails_ref = db.collection("RECEIVEDEMAILS").document(thread_id)
-            received_emails_ref.set(incoming_data)
+    # Get the user's email
+    service = build('calendar', 'v3', credentials=flow.credentials)
+    profile = service.calendarList().get(calendarId='primary').execute()
+    email = profile['id']
 
-            for message in messages:
-                add_message_to_thread(received_emails_ref, message)
-            print("Added thread to collection 'RECEIVEDEMAILS'.")
+    # Serialize credentials
+    serialized_credentials = {
+        'token': flow.credentials.token,
+        'refresh_token': flow.credentials.refresh_token,
+        'token_uri': flow.credentials.token_uri,
+        'client_id': flow.credentials.client_id,
+        'client_secret': flow.credentials.client_secret,
+        'scopes': flow.credentials.scopes
+    }
+    print("SERIALIZED CREDENTIALS: ", serialized_credentials)
 
-            userId = emails[owner_email][1]
-            free_time, calendar_service, timeZone = fetch_free_time(userId)
-            print(f"Free Time: {free_time}")
+    # Prepare data for Firestore
+    user_data = {
+        'calendarCredentials': serialized_credentials,
+        'calendarEmail': email
+    }
 
-            messages_collection = received_emails_ref.collection("MESSAGES")
-            all_messages = messages_collection.stream()
-            history = ""
-            for i, message in enumerate(all_messages):
-                message_data = message.to_dict()
-                history += f"{message_data['sender']}: {message_data['body']}\n"
-            print("History: ", history)
+    db = firestore.client()
+    users_ref = db.collection(u'USERS')
 
-            body_reply, subject_reply = generate_resp(history, client_email, owner_email, free_time, agent_email)
-            print("Body Reply: ", body_reply)
-            print("Subject Reply: ", subject_reply)
+    matching_docs = users_ref.where('authProviderData', '==', userId).stream()
 
-            meeting_info = extract_meeting_info(body_reply)
-            status = "Not Scheduled"
-            meeting_id = ""
-            meeting_link = ""
-            if meeting_info.meet:
-                print("MEETING CONFIRMED")
-                start_time = meeting_info.startTime
-                end_time = meeting_info.endTime
-                print("START TIME: {}".format(start_time))
-                print("END TIME: {}".format(end_time))
-                print("TIME ZONE: {}".format(timeZone))
-                event = create_calendar_event(calendar_service, owner_email, client_email, agent_email, start_time, end_time, timeZone)
-                try:
-                    meeting_link = event.get('hangoutLink', None)
-                except:
-                    meeting_link = ""
-                body_reply += "\n\nMeeting scheduled for {} to {} GMT \n {}".format(start_time, end_time, meeting_link)
+    for doc in matching_docs:
+        doc.reference.update(user_data)
 
-                # ADD MEETING TO MEETINGS COLLECTION
-                meetings_ref = db.collection("MEETINGS")
-                meeting_id = meetings_ref.document()
-                meeting_data = {
-                    "startTime": start_time,
-                    "endTime": end_time,
-                    "timeZone": timeZone,
-                    "meetingLink": meeting_link,
-                    "lastAgentAction": formatted_date,
-                    "participants": [owner_email, client_email],
-                    "schedulingAgentId": agent_id,
-                    "schedulingAgentEmail": agent_email,
-                    "userId": userId,
-                }
-                meeting_id.set(meeting_data)
-                print("MEETING ADDED TO MEETINGS COLLECTION")
+    return f'''
+    <html>
+        <head>
+            <meta http-equiv="refresh" content="2;url=http://localhost:3000/dashboard?userId={userId}">
+        </head>
+        <body>
+            <p>Authentication Complete, Redirecting.........</p>
+        </body>
+    </html>
+    '''
 
-                #ADD MEETING IN USER COLLECTION
-                users_ref = db.collection("USERS")
-                user_doc_ref = users_ref.document(userId)
-                meetings_collection_ref = user_doc_ref.collection("MEETINGS")
-                new_meeting_ref = meetings_collection_ref.document()
-                meeting_data = {
-                    "meetingId": meeting_id,
-                    "meetingLink": meeting_link,
-                }
-                new_meeting_ref.set(meeting_data)
-                print(f"MEETING ADDED TO USER {userId}', COLLECTION")
-
-            sent_message = send_email(gmail_service, client_email, subject_reply, body_reply, owner_email)
-            new_thread_id = sent_message['threadId']
-            new_thread_ref = db.collection("THREADS").document(new_thread_id)
-            new_thread_data = {
-                "ownerEmail": owner_email,
-                "ownerId": emails[owner_email][1],
-                "associatedClientEmail": client_email,
-                "handlingAgentId": agent_id,
-                "subject": subject_reply,
-                "createdAt": formatted_date,
-                "status": status,
-                "meetingId": meeting_id,
-            }
-            #ADDING NEW THREAD TO THREADS COLLECTION
-            new_thread_ref.set(new_thread_data)
-
-            #UPDATING STATUS OF THREAD
-            if meeting_info.meet:
-                new_thread_ref.update({"status": "Scheduled"})
-                new_thread_ref.update({"meetingId": meeting_id})
-
-            #ASSOCIATING THREAD WITH RECEIVED EMAIL
-            received_emails_ref.update({"associatedThreadId": new_thread_id})
-
-            sent_message = gmail_service.users().messages().get(userId='me', id=sent_message['id']).execute()
-            add_message_to_thread(new_thread_ref, sent_message)
-            print("EMAIL SENT AND ADDED TO THREAD: ", thread_id)
-
-            mark_thread_as_read(gmail_service, thread_id)
-            print(f"Marked thread {thread_id} as read.")
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
