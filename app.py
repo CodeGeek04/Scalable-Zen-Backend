@@ -1,4 +1,4 @@
-from flask import Flask, request, url_for, redirect, session
+from flask import Flask, request, url_for, redirect, session, jsonify
 from flask_cors import CORS
 from list_emails import get_agents, get_associated_emails_for_agent
 import firebase_admin
@@ -11,8 +11,11 @@ from event_planner import extract_meeting_info
 from gmail_api import reply_to_email_thread, send_email
 from datetime import datetime
 from google_auth_oauthlib.flow import InstalledAppFlow
+import google_auth_oauthlib.flow
 from googleapiclient.discovery import build
-
+from dotenv import load_dotenv
+import logging
+load_dotenv()
 import os
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -22,6 +25,10 @@ CORS(app)
 
 cred = credentials.Certificate("firebaseCredentials.json")
 firebase_admin.initialize_app(cred)
+
+
+
+
 
 #ADDING MESSAGES TO THREAD COLLECTION
 def extract_email_content(message):
@@ -132,6 +139,9 @@ def mark_thread_as_read(gmail_service, thread_id):
     ).execute()
     return "Thread marked as read."
 
+@app.route('/hi')
+def hi():
+    return jsonify({"message": "sup bitch!"})
 
 @app.route('/')
 def index():
@@ -384,34 +394,71 @@ def index():
                 print(f"Marked thread {thread_id} as read.")
     return "Success"
 
-@app.route('/authenticate_calendar', methods=['POST', 'GET'])
+
+CLIENT_ID = os.getenv('ZEN_CLIENT_ID')
+CLIENT_SECRET = os.getenv('ZEN_CLIENT_SECRET')
+REDIRECT_URIS = ['http://localhost:5000/callback','http://localhost:5000', 'https://zenbackend-mw5cw3u7ga-uc.a.run.app/callback']
+AUTH_URI = 'https://accounts.google.com/o/oauth2/auth'
+TOKEN_URI = 'https://accounts.google.com/o/oauth2/token'
+USER_INFO = 'https://www.googleapis.com/userinfo/v2/me'
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+@app.route('/authenticate_calendar', methods=['GET'])
 def authenticate():
     user_id = request.args.get('userId')
+    print('userId', user_id)
     print("USER ID: ", user_id)
-    flow = InstalledAppFlow.from_client_secrets_file(
-        'servicesCredentials.json',
-        ['https://www.googleapis.com/auth/calendar']
+   
+    flow = google_auth_oauthlib.flow.Flow.from_client_config(
+       {
+           "web": {
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "auth_uri": AUTH_URI,
+                "token_uri": TOKEN_URI,
+                "redirect_uris": REDIRECT_URIS,
+            }
+       },
+        scopes=SCOPES
     )
-    flow.redirect_uri = url_for('callback', userId=user_id, _external=True)
-    print(flow.redirect_uri)
-    authorization_url, _ = flow.authorization_url(prompt='consent')
+    flow.redirect_uri = REDIRECT_URIS[0]
+   
+    authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt="consent"
+        )
     session['userId'] = user_id
+    print('session', session)
     return redirect(authorization_url)
 
 @app.route('/callback')
 def callback():
-    userId = session['userId']
+    logging.info('recieving callback')
+    print(request.args.get('state'))
+    state = request.args.get("state")
+    userId = session.get("userId")
     print("USER ID IN CALLBACK: ", userId)
-    flow = InstalledAppFlow.from_client_secrets_file(
-        'servicesCredentials.json',
-        ['https://www.googleapis.com/auth/calendar']
+    if len(state) == 0:
+        return "error"
+    flow = google_auth_oauthlib.flow.Flow.from_client_config(
+        {
+            "web": {
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "auth_uri": AUTH_URI,
+                "token_uri": TOKEN_URI,
+                "redirect_uris": REDIRECT_URIS,
+            }
+        }, scopes=None, state=state
     )
-    flow.redirect_uri = url_for('callback', userId=userId, _external=True)
-    print(flow.redirect_uri)
-    flow.fetch_token(authorization_response=request.url)
+    flow.redirect_uri = REDIRECT_URIS[0]
+    authorization_response = request.url
+    flow.fetch_token(authorization_response=authorization_response)
+    credentials = flow.credentials
 
     # Get the user's email
-    service = build('calendar', 'v3', credentials=flow.credentials)
+    service = build('calendar', 'v3', credentials=credentials)
     profile = service.calendarList().get(calendarId='primary').execute()
     email = profile['id']
 
@@ -434,18 +481,14 @@ def callback():
     }
 
     db = firestore.client()
-    users_ref = db.collection(u'USERS')
+    users_ref = db.collection('USERS')
 
     matching_docs = users_ref.where('authProviderData', '==', userId).stream()
 
     for doc in matching_docs:
         doc.reference.update(user_data)
 
-    return '''
-    <script>
-        window.close(); // Close the popup window
-    </script>
-    '''
+    return redirect("http://localhost:3000/signup")
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

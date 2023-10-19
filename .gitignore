@@ -10,3 +10,7 @@
 # gmail_service.pkl
 .DS_Store
 
+.venv
+__pycache__
+*.json
+.env
