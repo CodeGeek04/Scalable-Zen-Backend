@@ -64,12 +64,15 @@ def fetch_free_time(userId):
     print(f"Preferences: {preferences}")
     print(f"Calendar Credentials: {calendar_token}")
     print(f"Email Address: {email_address}")
+    print(f"Calendar Email: {calendar_email}")
     # return "YOU ARE FREE FOR NEXT 20 DAYS", "Success", "Success"
     
     calendar_service = build_calendar_service(calendar_token)
     calendar_timezone = get_calendar_timezone(calendar_email, calendar_service)
 
     # Fetch the free/busy information
+    preferred_start_time = preferences['startTime']
+    preferred_end_time = preferences['endTime']
     preferred_start_time_dt = datetime.strptime(preferences['startTime'], '%H:%M').time()
     preferred_end_time_dt = datetime.strptime(preferences['endTime'], '%H:%M').time()
     tz = timezone(calendar_timezone)
@@ -87,7 +90,8 @@ def fetch_free_time(userId):
 
     # Check if there are no upcoming events
     if not busy_times:
-        return f"You are free for the next 20 days between {preferred_start_time} and {preferred_end_time}. (Time Zone: {calendar_timezone})"
+        resp = f"You are free for the next 20 days between {preferred_start_time} and {preferred_end_time}. (Time Zone: {calendar_timezone})"
+        return resp, calendar_service, calendar_timezone
 
     # Adjust the start time to the nearest half-hour mark
     while now.minute % 30 != 0:

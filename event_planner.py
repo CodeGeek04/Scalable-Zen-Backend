@@ -18,14 +18,16 @@ def extract_meeting_info(email_content):
                     whether a meeting is confirmed using current information or not. Extract this value as boolean True or False.
                     If it is possible, return True and startTime and endTime in the format "yyyy-mm-ddThh:mm:ss".
                     If not possible, return False and startTime and endTime as empty strings.
-                    Confirm the meeting if you think there is a common time to schedule.
+                    Confirm the meeting only if you think there is a common time to schedule.
+                    The email might be proposing a few time slots, so you need to decide properly is it is confirmed or not.
+                    Do not confirm if the email is only proposing time slots.
                     Just for your referene, right now its {}'''.format(str(now))}]
 
     messages.append({"role": "user", "content": email_content})
 
     meet = openai.ChatCompletion.create(
         # model="gpt-3.5-turbo",
-        model="gpt-4",
+        model="gpt-3.5-turbo",
         response_model=MeetData,
         messages=messages
     )

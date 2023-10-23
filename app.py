@@ -12,9 +12,10 @@ from gmail_api import reply_to_email_thread, send_email
 from datetime import datetime
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+import logging
 
 import os
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+# os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 app = Flask(__name__)
 app.secret_key = "secret key"
@@ -24,7 +25,7 @@ cred = credentials.Certificate("firebaseCredentials.json")
 firebase_admin.initialize_app(cred)
 
 #ADDING MESSAGES TO THREAD COLLECTION
-def extract_email_content(message):
+def extract_email_content(message, new = False):
     current_datetime = datetime.now()
     formatted_date = current_datetime.strftime("%d/%m/%Y %H:%M:%S")
     # Initialize email content
@@ -64,8 +65,10 @@ def extract_email_content(message):
                 if body_data:
                     part_body = base64.urlsafe_b64decode(body_data).decode('utf-8', 'ignore')
                     # Remove quoted text and everything after it
-                    # email_body += re.sub(r'On [^\n]*wrote:[^\n]*\n[\s\S]*', '', part_body)
-                    email_body += part_body
+                    # if new:
+                    #     email_body += part_body
+                    # else:
+                    email_body += re.sub(r'On [^\n]*wrote:[^\n]*\n[\s\S]*', '', part_body)
 
         email_content["body"] = email_body
 
@@ -76,15 +79,25 @@ def extract_email_content(message):
             email_content["body"] = base64.urlsafe_b64decode(body_data).decode('utf-8', 'ignore')
 
     return email_content
-def add_message_to_thread(thread_ref, message):
+def add_message_to_thread(thread_ref, message, new = False):
     messages_collection = thread_ref.collection("MESSAGES")
     message_id = message['id']  # Assuming 'id' contains the message ID
 
-    email_content = extract_email_content(message)
+    email_content = extract_email_content(message, new)
 
     message_ref = messages_collection.document(message_id)
     message_ref.set(email_content)
 
+def add_message_to_user_threads(db, user_id, message, thread_id, message_id):
+    # Navigate to the user's document
+    user_ref = db.collection("USERS").document(user_id)
+    threads_collection = user_ref.collection("THREADS")
+    thread_ref = threads_collection.document(thread_id)
+    messages_collection = thread_ref.collection("MESSAGES")
+    email_content = extract_email_content(message)
+    message_ref = messages_collection.document(message_id)
+    
+    message_ref.set(email_content)
 
 #EXTRACTING EMAIL FROM A STRING
 def extract_email(email_string):
@@ -164,7 +177,11 @@ def index():
             if not owner_email:
                 print("Owner email not found in thread. Marking it as read and continuing...")
                 mark_thread_as_read(gmail_service, thread_id)
-                return "Success"
+                continue
+            if not client_email:
+                print("Client email not found in thread. Marking it as read and continuing...")
+                mark_thread_as_read(gmail_service, thread_id)
+                continue
             
             print(f"Owner Email: {owner_email}, Client Email: {client_email}")
             user_id = emails[owner_email][1]
@@ -173,18 +190,27 @@ def index():
             if status == "NoCal":
                 print("User has not connected calendar. Sending email to connect calendar.")
                 subject_reply = "Request to connect calendar"
-                body_reply = "You have not connected your calendar yet. Please connect your calendar to continue."
-                reply_to_email_thread(gmail_service, messages[-1], body_reply, owner_email, thread['id'], agent_email)
+                body_reply = "You have not connected your calendar yet. Please connect your calendar to use Zen."
+                try:
+                    reply_to_email_thread(gmail_service, messages[-1], body_reply, owner_email, thread['id'], agent_email)
+                except Exception as e:
+                    print("Error sending email: ", e)
+                    logging.info("Error sending email: ", e)
+                    send_email(gmail_service, owner_email, subject_reply, body_reply)
                 mark_thread_as_read(gmail_service, thread_id)
+                continue
 
             thread_ref = db.collection("THREADS").document(thread_id)
             thread_doc = thread_ref.get()
 
             if thread_doc.exists:
                 print(f"Thread {thread_id} already exists in collection 'THREADS'")
-                print(f"Adding last message to collection 'MESSAGES'")
+                print(f"Adding last message- {messages[-1]['id']} to collection 'MESSAGES'")
                 last_message = messages[-1]
                 add_message_to_thread(thread_ref, last_message)
+
+                print("ADDING THREAD TO USER's THREAD COLLECTION")
+                add_message_to_user_threads(db, user_id, last_message, thread_id, last_message['id'])
 
                 #FETCHING FREE TIME FOR OWNER
                 userId = emails[owner_email][1]
@@ -254,9 +280,13 @@ def index():
                     print(f"MEETING ADDED TO USER {userId}', COLLECTION")
 
                 sent_message = reply_to_email_thread(gmail_service, last_message, body_reply, client_email, thread['id'], owner_email)
+                message_id = sent_message['id']
                 sent_message = gmail_service.users().messages().get(userId='me', id=sent_message['id']).execute()
                 add_message_to_thread(thread_ref, sent_message)
                 print("REPLY SENT AND ADDED TO THREAD: ", thread_id)
+
+                add_message_to_user_threads(db, userId, sent_message, thread_id, message_id)
+                print("REPLY SENT AND ADDED TO USER's THREAD: ", thread_id)
 
                 mark_thread_as_read(gmail_service, thread_id)
                 print(f"Marked thread {thread_id} as read.")
@@ -278,7 +308,7 @@ def index():
                 received_emails_ref.set(incoming_data)
 
                 for message in messages:
-                    add_message_to_thread(received_emails_ref, message)
+                    add_message_to_thread(received_emails_ref, message, new = True)
                 print("Added thread to collection 'RECEIVEDEMAILS'.")
 
                 userId = emails[owner_email][1]
@@ -346,6 +376,7 @@ def index():
 
                 sent_message = send_email(gmail_service, client_email, subject_reply, body_reply, owner_email)
                 new_thread_id = sent_message['threadId']
+                new_message_id = sent_message['id']
                 new_thread_ref = db.collection("THREADS").document(new_thread_id)
                 new_thread_data = {
                     "ownerEmail": owner_email,
@@ -380,6 +411,10 @@ def index():
                 new_thread_ref = user_threads_collection_ref.document(new_thread_id)
                 new_thread_ref.set(new_thread_data)
 
+
+                add_message_to_user_threads(db, userId, sent_message, new_thread_id, new_message_id)
+                print("REPLY SENT AND ADDED TO USER's THREAD: ", thread_id)
+
                 mark_thread_as_read(gmail_service, thread_id)
                 print(f"Marked thread {thread_id} as read.")
     return "Success"
@@ -388,27 +423,35 @@ def index():
 def authenticate():
     user_id = request.args.get('userId')
     print("USER ID: ", user_id)
+    logging.info("USER ID: ", user_id)
     flow = InstalledAppFlow.from_client_secrets_file(
         'servicesCredentials.json',
         ['https://www.googleapis.com/auth/calendar']
     )
-    flow.redirect_uri = url_for('callback', userId=user_id, _external=True)
+    # flow.redirect_uri = url_for('callback', _external=True)
+    flow.redirect_uri = "https://zenbackend-mw5cw3u7ga-uc.a.run.app/callback"
     print(flow.redirect_uri)
+    logging.info("Redirect URI: ", flow.redirect_uri)
     authorization_url, _ = flow.authorization_url(prompt='consent')
     session['userId'] = user_id
     return redirect(authorization_url)
 
 @app.route('/callback')
 def callback():
-    userId = session['userId']
+    print("SESSION: ", session)
+    logging.info("SESSION: ", session)
+    userId = session.get("userId")
     print("USER ID IN CALLBACK: ", userId)
+    logging.info("USER ID IN CALLBACK: ", userId)
     flow = InstalledAppFlow.from_client_secrets_file(
         'servicesCredentials.json',
         ['https://www.googleapis.com/auth/calendar']
     )
-    flow.redirect_uri = url_for('callback', userId=userId, _external=True)
+    # flow.redirect_uri = url_for('callback', _external=True)
+    flow.redirect_uri = "https://zenbackend-mw5cw3u7ga-uc.a.run.app/callback"
     print(flow.redirect_uri)
-    flow.fetch_token(authorization_response=request.url)
+    authorization_response = request.url.replace("http://", "https://")
+    flow.fetch_token(authorization_response=authorization_response)
 
     # Get the user's email
     service = build('calendar', 'v3', credentials=flow.credentials)
@@ -425,6 +468,7 @@ def callback():
         'scopes': flow.credentials.scopes
     }
     print("SERIALIZED CREDENTIALS: ", serialized_credentials)
+    logging.info("SERIALIZED CREDENTIALS: ", serialized_credentials)
 
     # Prepare data for Firestore
     user_data = {
@@ -435,18 +479,14 @@ def callback():
 
     db = firestore.client()
     users_ref = db.collection(u'USERS')
+    user_doc = users_ref.document(userId)
 
-    matching_docs = users_ref.where('authProviderData', '==', userId).stream()
+    user_doc.update(user_data)
+    print("USER DATA UPDATED FOR USER: ", userId)
+    logging.info("USER DATA UPDATED FOR USER: ", userId)
 
-    for doc in matching_docs:
-        doc.reference.update(user_data)
+    return redirect("https://zen-scheduler-web.vercel.app/dashboard")
 
-    return '''
-    <script>
-        window.close(); // Close the popup window
-    </script>
-    '''
-
+port = int(os.environ.get("PORT", 8080))
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=True)

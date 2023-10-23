@@ -9,3 +9,5 @@ google-api-python-client
 instructor
 pytz
 beautifulsoup4
+gunicorn
+python-dotenv
