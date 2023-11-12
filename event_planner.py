@@ -1,11 +1,15 @@
 import openai
+from openai import OpenAI
 import instructor
 from pydantic import BaseModel
 from datetime import datetime
+import os
 
 # This enables response_model keyword
 # from openai.ChatCompletion.create
-instructor.patch()
+# instructor.patch()
+client = instructor.patch(OpenAI(api_key=os.environ["OPENAI_API_KEY"]))
+
 now = datetime.utcnow()
 
 class MeetData(BaseModel):
@@ -25,9 +29,9 @@ def extract_meeting_info(email_content):
 
     messages.append({"role": "user", "content": email_content})
 
-    meet = openai.ChatCompletion.create(
+    meet = client.chat.completions.create(
         # model="gpt-3.5-turbo",
-        model="gpt-3.5-turbo",
+        model="gpt-4",
         response_model=MeetData,
         messages=messages
     )

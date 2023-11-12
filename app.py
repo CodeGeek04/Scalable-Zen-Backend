@@ -208,6 +208,8 @@ def index():
                 print(f"Adding last message- {messages[-1]['id']} to collection 'MESSAGES'")
                 last_message = messages[-1]
                 add_message_to_thread(thread_ref, last_message)
+                thread_status = thread_doc.get("status")
+                print(f"Thread status: {thread_status}")
 
                 print("ADDING THREAD TO USER's THREAD COLLECTION")
                 add_message_to_user_threads(db, user_id, last_message, thread_id, last_message['id'])
@@ -231,6 +233,10 @@ def index():
 
                 meeting_info = extract_meeting_info(body_reply)
                 if meeting_info.meet:
+                    if thread_status == "Scheduled":
+                        print("MEETING ALREADY SCHEDULED")
+                        mark_thread_as_read(gmail_service, thread_id)
+                        continue
                     print("MEETING CONFIRMED")
                     start_time = meeting_info.startTime
                     end_time = meeting_info.endTime
