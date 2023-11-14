@@ -167,17 +167,17 @@ def fetch_free_time(userId):
 
 
 
-def create_calendar_event(owner_calendar_service, owner_email, client_email, assistant_email, start_time, end_time, time_zone = 'US/Eastern'):
+def create_calendar_event(owner_calendar_service, participants, assistant_email, start_time, end_time, time_zone = 'US/Eastern'):
     # Get the calendar service for the owner
     # if not owner_calendar_service:
     #     owner_calendar_service = get_calendar_service(owner_email)
 
     # Define event details
     event = {
-        "summary": "Meeting with {}".format(client_email),
+        "summary": "Meeting scheduled by Zen, Email Assistant",
         "start": {"dateTime": start_time, "timeZone": time_zone},
         "end": {"dateTime": end_time, "timeZone": time_zone},
-        "attendees": [{"email": owner_email}, {"email": client_email}],
+        "attendees": [{"email": participant} for participant in participants],
         "organizer": {"email": assistant_email},
         "conferenceData": {
             "createRequest": {

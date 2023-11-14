@@ -8,7 +8,7 @@ import re, base64, time
 from calendar_api import fetch_free_time, create_calendar_event
 from responder import generate_resp
 from event_planner import extract_meeting_info
-from gmail_api import reply_to_email_thread, send_email
+from gmail_api import reply_to_email_thread, send_email, send_draft
 from datetime import datetime
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -64,11 +64,11 @@ def extract_email_content(message, new = False):
                 body_data = part['body'].get('data', '')
                 if body_data:
                     part_body = base64.urlsafe_b64decode(body_data).decode('utf-8', 'ignore')
-                    # Remove quoted text and everything after it
-                    # if new:
-                    #     email_body += part_body
-                    # else:
-                    email_body += re.sub(r'On [^\n]*wrote:[^\n]*\n[\s\S]*', '', part_body)
+
+                    if not new:
+                        email_body += re.sub(r'On [^\n]*wrote:[^\n]*\n[\s\S]*', '', part_body)
+                    else:
+                        email_body += part_body
 
         email_content["body"] = email_body
 
@@ -79,9 +79,16 @@ def extract_email_content(message, new = False):
             email_content["body"] = base64.urlsafe_b64decode(body_data).decode('utf-8', 'ignore')
 
     return email_content
+
+def extract_email_content_from_received(message):
+    print("EXTRACTING EMAIL CONTENT FROM RECEIVED")
+    print(message)
+    pass
+
+
 def add_message_to_thread(thread_ref, message, new = False):
     messages_collection = thread_ref.collection("MESSAGES")
-    message_id = message['id']  # Assuming 'id' contains the message ID
+    message_id = message['id']
 
     email_content = extract_email_content(message, new)
 
@@ -115,6 +122,22 @@ def get_emails_from_thread(messages, assistant_email, all_owners):
     print("GETTING EMAIL IDs FROM THREAD")
     all_emails = []
 
+    # Get the latest message in the thread
+    latest_message = messages[-1]
+
+    # Extract the sender and receiver of the latest email
+    from_email_list = [header['value'] for header in latest_message['payload']['headers'] if header['name'].lower() == 'from']
+    to_email_list = [header['value'] for header in latest_message['payload']['headers'] if header['name'].lower() == 'to']
+
+    # The sender of the latest email is the owner
+    owner_email = from_email_list[0] if from_email_list else None
+    owner_email = extract_email(owner_email)
+
+    # The receiver of the latest email is the client
+    client_email = to_email_list[0] if to_email_list else None
+    client_email = extract_email(client_email)
+
+    # Extract all emails involved in the thread
     for message in messages:
         from_email_list = [header['value'] for header in message['payload']['headers'] if header['name'].lower() == 'from']
         to_email_list = [header['value'] for header in message['payload']['headers'] if header['name'].lower() == 'to']
@@ -123,18 +146,11 @@ def get_emails_from_thread(messages, assistant_email, all_owners):
         
         all_emails.extend(from_email_list + to_email_list + cc_email_list + bcc_email_list)
     
+    # Remove duplicates and the assistant's email
     all_emails = list(set(all_emails))
-    all_emails = [extract_email(email) for email in all_emails]
-    
-    print("All Emails: ", all_emails)
-    print("All Owners: ", all_owners)
-    owner_emails = [email for email in all_emails if email in all_owners and email != assistant_email]
-    owner_email = owner_emails[0] if owner_emails else None
+    all_emails = [extract_email(email) for email in all_emails if email != assistant_email]
 
-    client_emails = [email for email in all_emails if email != owner_email and email != assistant_email]
-    client_email = client_emails[0] if client_emails else None
-
-    return owner_email, client_email
+    return owner_email, client_email, all_emails
 
 #MARKING THREAD AS READ
 def mark_thread_as_read(gmail_service, thread_id):
@@ -170,54 +186,33 @@ def index():
 
         for thread in unread_threads:
             thread_id = thread["id"]
-            full_thread = gmail_service.users().threads().get(userId='me', id=thread['id']).execute()
-            messages = full_thread.get('messages', [])
-            owner_email, client_email = get_emails_from_thread(messages, agent_email, email_ids)
-
-            if not owner_email:
-                print("Owner email not found in thread. Marking it as read and continuing...")
-                mark_thread_as_read(gmail_service, thread_id)
-                continue
-            if not client_email:
-                print("Client email not found in thread. Marking it as read and continuing...")
-                mark_thread_as_read(gmail_service, thread_id)
-                continue
-            
-            print(f"Owner Email: {owner_email}, Client Email: {client_email}")
-            user_id = emails[owner_email][1]
-            user_ref = db.collection("USERS").document(user_id)
-            status = user_ref.get().get("status")
-            if status == "NoCal":
-                print("User has not connected calendar. Sending email to connect calendar.")
-                subject_reply = "Request to connect calendar"
-                body_reply = "You have not connected your calendar yet. Please connect your calendar to use Zen."
-                try:
-                    reply_to_email_thread(gmail_service, messages[-1], body_reply, owner_email, thread['id'], agent_email)
-                except Exception as e:
-                    print("Error sending email: ", e)
-                    logging.info("Error sending email: ", e)
-                    send_email(gmail_service, owner_email, subject_reply, body_reply)
-                mark_thread_as_read(gmail_service, thread_id)
-                continue
-
             thread_ref = db.collection("THREADS").document(thread_id)
             thread_doc = thread_ref.get()
 
             if thread_doc.exists:
                 print(f"Thread {thread_id} already exists in collection 'THREADS'")
+                # IF THREAD DOC EXISTS, GET THE OWNER, CLIENT AND LIST OF PARTICIPANTS FROM ATTRIBUTES ownerEmail, clientEmail and participantsEmail (list) FROM THE USER'S DOC ON FIREBASE
+                owner_email = thread_doc.get("ownerEmail")
+                userId = emails[owner_email][1]
+                client_email = thread_doc.get("clientEmail")
+                participants_email = thread_doc.get("participantsEmail")
+
+                full_thread = gmail_service.users().threads().get(userId='me', id=thread['id']).execute()
+                messages = full_thread.get('messages', [])
                 print(f"Adding last message- {messages[-1]['id']} to collection 'MESSAGES'")
                 last_message = messages[-1]
                 add_message_to_thread(thread_ref, last_message)
+
                 thread_status = thread_doc.get("status")
                 print(f"Thread status: {thread_status}")
 
-                print("ADDING THREAD TO USER's THREAD COLLECTION")
+                print("ADDING MESSAGE TO USER's THREAD COLLECTION")
                 add_message_to_user_threads(db, user_id, last_message, thread_id, last_message['id'])
 
                 #FETCHING FREE TIME FOR OWNER
-                userId = emails[owner_email][1]
                 free_time, calendar_service, timeZone = fetch_free_time(userId)
                 print(f"Free Time: {free_time}")
+
 
                 messages_collection = thread_ref.collection("MESSAGES")
                 all_messages = messages_collection.stream()
@@ -243,7 +238,7 @@ def index():
                     print("START TIME: {}".format(start_time))
                     print("END TIME: {}".format(end_time))
                     print("TIME ZONE: {}".format(timeZone))
-                    event = create_calendar_event(calendar_service, owner_email, client_email, agent_email, start_time, end_time, timeZone)
+                    event = create_calendar_event(calendar_service, participants_email, agent_email, start_time, end_time, timeZone)
                     try:
                         meeting_link = event.get('hangoutLink', None)
                     except:
@@ -259,7 +254,7 @@ def index():
                         "timeZone": timeZone,
                         "meetingLink": meeting_link,
                         "lastAgentAction": formatted_date,
-                        "participants": [owner_email, client_email],
+                        "participants": participants_email,
                         "schedulingAgentId": agent_id,
                         "schedulingAgentEmail": agent_email,
                         "threadId": thread_id,
@@ -299,12 +294,43 @@ def index():
 
 
             else:
+                full_thread = gmail_service.users().threads().get(userId='me', id=thread['id']).execute()
+                messages = full_thread.get('messages', [])
+                owner_email, client_email, participants_email = get_emails_from_thread(messages, agent_email, email_ids)
+
+                if not owner_email:
+                    print("Owner email not found in thread. Marking it as read and continuing...")
+                    mark_thread_as_read(gmail_service, thread_id)
+                    continue
+                if not client_email:
+                    print("Client email not found in thread. Marking it as read and continuing...")
+                    mark_thread_as_read(gmail_service, thread_id)
+                    continue
+                
+                print(f"Owner Email: {owner_email}, Client Email: {client_email}, Participants: {participants_email}")
+                user_id = emails[owner_email][1]
+                user_ref = db.collection("USERS").document(user_id)
+                status = user_ref.get().get("status")
+                if status == "NoCal":
+                    print("User has not connected calendar. Sending email to connect calendar.")
+                    subject_reply = "Request to connect calendar"
+                    body_reply = "You have not connected your calendar yet. Please connect your calendar to use Zen."
+                    try:
+                        reply_to_email_thread(gmail_service, messages[-1], body_reply, owner_email, thread['id'], agent_email)
+                    except Exception as e:
+                        print("Error sending email: ", e)
+                        logging.info("Error sending email: ", e)
+                        send_email(gmail_service, owner_email, subject_reply, body_reply)
+                    mark_thread_as_read(gmail_service, thread_id)
+                    continue
+
                 print(f"Thread {thread_id} does not exist in collection 'THREADS'")
                 print("Adding thread to collection 'RECEIVEDEMAILS'")
                 incoming_data = {
                     "ownerEmail": owner_email,
                     "ownerId": emails[owner_email][1],
-                    "associatedClientEmail": client_email,
+                    "clientEmail": client_email,
+                    "participantsEmail": participants_email,
                     "handlingAgentId": agent_id,
                     "subject": messages[0]['payload']['headers'][0]['value'],
                     "createdAt": formatted_date,
@@ -313,6 +339,8 @@ def index():
                 received_emails_ref = db.collection("RECEIVEDEMAILS").document(thread_id)
                 received_emails_ref.set(incoming_data)
 
+                print("Adding messages to collection 'MESSAGES'")
+                print(len(messages), " messages found in thread.")
                 for message in messages:
                     add_message_to_thread(received_emails_ref, message, new = True)
                 print("Added thread to collection 'RECEIVEDEMAILS'.")
@@ -344,7 +372,7 @@ def index():
                     print("START TIME: {}".format(start_time))
                     print("END TIME: {}".format(end_time))
                     print("TIME ZONE: {}".format(timeZone))
-                    event = create_calendar_event(calendar_service, owner_email, client_email, agent_email, start_time, end_time, timeZone)
+                    event = create_calendar_event(calendar_service, participants_email, agent_email, start_time, end_time, timeZone)
                     try:
                         meeting_link = event.get('hangoutLink', None)
                     except:
@@ -360,7 +388,7 @@ def index():
                         "timeZone": timeZone,
                         "meetingLink": meeting_link,
                         "lastAgentAction": formatted_date,
-                        "participants": [owner_email, client_email],
+                        "participants": participants_email,
                         "schedulingAgentId": agent_id,
                         "schedulingAgentEmail": agent_email,
                         "userId": userId,
@@ -381,13 +409,16 @@ def index():
                     print(f"MEETING ADDED TO USER {userId}', COLLECTION")
 
                 sent_message = send_email(gmail_service, client_email, subject_reply, body_reply, owner_email)
+                # sent_message = send_draft(gmail_service, client_email, subject_reply, body_reply, owner_email)
+                # return "SUCCESS"
                 new_thread_id = sent_message['threadId']
                 new_message_id = sent_message['id']
                 new_thread_ref = db.collection("THREADS").document(new_thread_id)
                 new_thread_data = {
                     "ownerEmail": owner_email,
                     "ownerId": emails[owner_email][1],
-                    "associatedClientEmail": client_email,
+                    "clientEmail": client_email,
+                    "participantsEmail": participants_email,
                     "handlingAgentId": agent_id,
                     "subject": subject_reply,
                     "createdAt": formatted_date,
@@ -399,6 +430,8 @@ def index():
 
                 print("ADDING LAST MESSAGE TO THREAD")
                 sent_message = gmail_service.users().messages().get(userId='me', id=sent_message['id']).execute()
+                for message in messages:
+                    add_message_to_thread(new_thread_ref, message)
                 add_message_to_thread(new_thread_ref, sent_message)
                 print("EMAIL SENT AND ADDED TO THREAD: ", thread_id)
 
@@ -417,7 +450,7 @@ def index():
                 new_thread_ref = user_threads_collection_ref.document(new_thread_id)
                 new_thread_ref.set(new_thread_data)
 
-
+                print("ADDING MESSAGE TO USER's THREAD COLLECTION")
                 add_message_to_user_threads(db, userId, sent_message, new_thread_id, new_message_id)
                 print("REPLY SENT AND ADDED TO USER's THREAD: ", thread_id)
 

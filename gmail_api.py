@@ -74,6 +74,17 @@ def send_email(service, to_email, subject, body, bcc_email = None):
     raw_email = base64.urlsafe_b64encode(email_msg.as_bytes()).decode('utf-8')
     return service.users().messages().send(userId='me', body={'raw': raw_email}).execute()
 
+def send_draft(service, to_email, subject, body, bcc_email = None):
+    email_msg = MIMEText(body)
+    email_msg['to'] = to_email
+    email_msg['subject'] = subject
+
+    if bcc_email:
+        email_msg['bcc'] = bcc_email
+
+    raw_email = base64.urlsafe_b64encode(email_msg.as_bytes()).decode('utf-8')
+    draft = service.users().drafts().create(userId='me', body={'message': {'raw': raw_email}}).execute()
+    return draft
 
 def reply_to_email(service, original_message, reply_content):
     headers = original_message['payload']['headers']

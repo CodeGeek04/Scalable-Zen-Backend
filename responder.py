@@ -17,10 +17,10 @@ def generate_resp(history, sender_email, owner_email, free_time, assistant_email
     body_prompt = '''You are Zen ({}). Today is {}. You are working under, {} (the owner), who has free time slots: {}. 
                     They are trying to schedule a meeting with the client, {} (extract the name properly to write in email). 
                     Look at this conversation conversation: "{}". Now, look thoroughly through this conversation, and based on this, you have to do one of the following:
-                    1) Suggest free times for the meeting (atleast 2) from available time slots that the client can choose from. Limit the duration to 30 minutes, and provide start + end time both and the time-zone. Be biased towards suggesting times in the next 2-3 days.
+                    1) Suggest free times for the meeting (atleast 2) from available time slots, (and client's preferences, if any) that the client can choose from. Limit the duration to 30-45 minutes, and provide start + end time both and the time-zone. Be biased towards suggesting times in the next 2-3 days.
                     2) Generate a confirmation message for the client containing necessary details regarding time of meeting, like starting and ending time. Do not include location of meeting.
                     3) If the user has some query for time slots, or they are just sending regards, then generate the email accordingly for the user.
-                    Decide just one of these and then frame the body of the email, and check the time zone properly as provided.
+                    Decide just one of these and then frame the body of the email, and check the time zone properly as provided. Carefully include the client's preferences if present in the conversation, and provide suitable 30minute-1hour window(s).
                     Do not write subject of the email.
                     I will be sending your response directly to the client as it is, so you need to reply JUST THE BODY of email which will be automatically sent to the client. 
                     Do not even share any notes/instructions/your thought process.
